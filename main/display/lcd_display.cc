@@ -325,6 +325,14 @@ MipiLcdDisplay::MipiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel
 LcdDisplay::~LcdDisplay() {
     SetPreviewImage(nullptr);
     ClearDebugPreview();
+    ClearEyes();
+    FreeEyeMirrorBuffer();
+    if (eye_box_ != nullptr) {
+        lv_obj_del(eye_box_);
+        eye_box_ = nullptr;
+        eye_left_ = nullptr;
+        eye_right_ = nullptr;
+    }
     if (debug_preview_ != nullptr) {
         lv_obj_del(debug_preview_);
         debug_preview_ = nullptr;
@@ -1070,6 +1078,14 @@ void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
     if (image == nullptr) {
         esp_timer_stop(preview_timer_);
         lv_obj_remove_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+        if (eye_box_ != nullptr && eye_left_ != nullptr) {
+            // Restore eyes if a frame was showing (src already set).
+            const void* src = lv_image_get_src(eye_left_);
+            if (src != nullptr) {
+                lv_obj_remove_flag(eye_box_, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
         lv_obj_add_flag(preview_image_, LV_OBJ_FLAG_HIDDEN);
         preview_image_cached_.reset();
         if (gif_controller_) {
@@ -1086,11 +1102,14 @@ void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
         lv_image_set_scale(preview_image_, 128 * width_ / img_dsc->header.w);
     }
 
-    // Hide emoji_box_
+    // Hide emoji_box_ and eyes while photo preview is up
     if (gif_controller_) {
         gif_controller_->Stop();
     }
     lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+    if (eye_box_ != nullptr) {
+        lv_obj_add_flag(eye_box_, LV_OBJ_FLAG_HIDDEN);
+    }
     lv_obj_remove_flag(preview_image_, LV_OBJ_FLAG_HIDDEN);
     esp_timer_stop(preview_timer_);
     ESP_ERROR_CHECK(esp_timer_start_once(preview_timer_, PREVIEW_IMAGE_DURATION_MS * 1000));
@@ -1482,6 +1501,152 @@ void LcdDisplay::ClearDebugPreview() {
     }
     if (debug_preview_ != nullptr) {
         lv_obj_add_flag(debug_preview_, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void LcdDisplay::FreeEyeMirrorBuffer() {
+    if (eye_right_pixels_ != nullptr) {
+        heap_caps_free(eye_right_pixels_);
+        eye_right_pixels_ = nullptr;
+        eye_right_cap_ = 0;
+        eye_frame_w_ = 0;
+        eye_frame_h_ = 0;
+        memset(&eye_right_dsc_, 0, sizeof(eye_right_dsc_));
+    }
+}
+
+void LcdDisplay::EnsureEyeUi() {
+    if (eye_box_ != nullptr) {
+        return;
+    }
+    if (!setup_ui_called_) {
+        return;
+    }
+    auto screen = lv_screen_active();
+    if (screen == nullptr) {
+        return;
+    }
+
+    auto lvgl_theme = static_cast<LvglTheme*>(current_theme_);
+    int top_offset = 48;
+    if (lvgl_theme != nullptr && lvgl_theme->text_font() != nullptr &&
+        lvgl_theme->text_font()->font() != nullptr) {
+        top_offset = lvgl_theme->text_font()->font()->line_height + lvgl_theme->spacing(8);
+    }
+
+    eye_box_ = lv_obj_create(screen);
+    lv_obj_set_size(eye_box_, 400, 200);
+    lv_obj_set_style_bg_opa(eye_box_, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(eye_box_, 0, 0);
+    lv_obj_set_style_pad_all(eye_box_, 0, 0);
+    lv_obj_set_style_pad_column(eye_box_, 0, 0);
+    lv_obj_set_flex_flow(eye_box_, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(eye_box_, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_scrollbar_mode(eye_box_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(eye_box_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(eye_box_, LV_OBJ_FLAG_FLOATING);
+    lv_obj_align(eye_box_, LV_ALIGN_TOP_MID, 0, top_offset);
+
+    eye_left_ = lv_image_create(eye_box_);
+    lv_obj_set_size(eye_left_, 200, 200);
+
+    eye_right_ = lv_image_create(eye_box_);
+    lv_obj_set_size(eye_right_, 200, 200);
+
+    // Keep eyes above emoji, below status/notification overlays.
+    if (emoji_box_ != nullptr) {
+        lv_obj_move_foreground(eye_box_);
+        lv_obj_move_foreground(status_bar_);
+        if (top_bar_ != nullptr) {
+            lv_obj_move_foreground(top_bar_);
+        }
+    }
+
+    lv_obj_add_flag(eye_box_, LV_OBJ_FLAG_HIDDEN);
+}
+
+void LcdDisplay::SetEyeFrame(const void* image_dsc) {
+    if (image_dsc == nullptr) {
+        ClearEyes();
+        return;
+    }
+    const auto* dsc = static_cast<const lv_img_dsc_t*>(image_dsc);
+    if (dsc->data == nullptr || dsc->header.w <= 0 || dsc->header.h <= 0) {
+        return;
+    }
+
+    DisplayLockGuard lock(this);
+    if (!lock) {
+        return;
+    }
+    EnsureEyeUi();
+    if (eye_box_ == nullptr || eye_left_ == nullptr || eye_right_ == nullptr) {
+        return;
+    }
+
+    const int w = dsc->header.w;
+    const int h = dsc->header.h;
+    const size_t bytes = (size_t)w * (size_t)h * 4;
+    if (eye_right_pixels_ == nullptr || eye_right_cap_ < (int)bytes || eye_frame_w_ != w ||
+        eye_frame_h_ != h) {
+        FreeEyeMirrorBuffer();
+        eye_right_pixels_ =
+            (uint8_t*)heap_caps_aligned_alloc(64, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (eye_right_pixels_ == nullptr) {
+            ESP_LOGE(TAG, "eye mirror alloc failed (%dx%d)", w, h);
+            return;
+        }
+        eye_right_cap_ = (int)bytes;
+        eye_frame_w_ = w;
+        eye_frame_h_ = h;
+        memset(&eye_right_dsc_, 0, sizeof(eye_right_dsc_));
+        eye_right_dsc_.header.magic = LV_IMAGE_HEADER_MAGIC;
+        eye_right_dsc_.header.cf = LV_COLOR_FORMAT_ARGB8888;
+        eye_right_dsc_.header.w = w;
+        eye_right_dsc_.header.h = h;
+        eye_right_dsc_.header.stride = w * 4;
+        eye_right_dsc_.header.flags = LV_IMAGE_FLAGS_MODIFIABLE;
+        eye_right_dsc_.data = eye_right_pixels_;
+        eye_right_dsc_.data_size = bytes;
+    }
+
+    // Horizontal mirror: same ARGB8888 canvas as LvglGif.
+    const uint32_t* src = reinterpret_cast<const uint32_t*>(dsc->data);
+    uint32_t* dst = reinterpret_cast<uint32_t*>(eye_right_pixels_);
+    for (int y = 0; y < h; ++y) {
+        const uint32_t* srow = src + (size_t)y * (size_t)w;
+        uint32_t* drow = dst + (size_t)y * (size_t)w;
+        for (int x = 0; x < w; ++x) {
+            drow[w - 1 - x] = srow[x];
+        }
+    }
+#if CONFIG_SPIRAM
+    esp_cache_msync(eye_right_pixels_, bytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+#endif
+
+    lv_image_set_src(eye_left_, dsc);
+    lv_image_set_src(eye_right_, &eye_right_dsc_);
+    lv_obj_invalidate(eye_left_);
+    lv_obj_invalidate(eye_right_);
+    lv_obj_remove_flag(eye_box_, LV_OBJ_FLAG_HIDDEN);
+
+    // Prefer eyes over the centered emoji while animation is active.
+    if (emoji_box_ != nullptr) {
+        lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void LcdDisplay::ClearEyes() {
+    DisplayLockGuard lock(this);
+    if (!lock) {
+        return;
+    }
+    if (eye_box_ != nullptr) {
+        lv_obj_add_flag(eye_box_, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (emoji_box_ != nullptr) {
+        lv_obj_remove_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
     }
 }
 

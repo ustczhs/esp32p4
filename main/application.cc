@@ -8,6 +8,9 @@
 #if CONFIG_XIAOZHI_ENABLE_FACE_TRACK
 #include "face_tracker.h"
 #endif
+#if CONFIG_XIAOZHI_ENABLE_EYE_ANIM
+#include "eye_player.h"
+#endif
 #include "mcp_server.h"
 #include "mqtt_protocol.h"
 #include "settings.h"
@@ -444,6 +447,11 @@ void Application::CheckAssetsVersion() {
     assets.Apply();
     display->SetChatMessage("system", "");
     display->SetEmotion("robot_2");
+
+#if CONFIG_XIAOZHI_ENABLE_EYE_ANIM
+    // Eyes need mmap'd GIF assets; start after Apply().
+    EyePlayer::GetInstance().Start();
+#endif
 }
 
 void Application::CheckNewVersion() {

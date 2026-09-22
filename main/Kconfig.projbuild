@@ -1079,6 +1079,15 @@ menu "Camera Configuration"
             face center coordinates on the status notification. Camera preview
             is not shown. Can be toggled at runtime via MCP.
 
+    config XIAOZHI_ENABLE_EYE_ANIM
+        bool "Enable dual-eye GIF animation"
+        default n
+        depends on IDF_TARGET_ESP32P4
+        help
+            Show left/right eye animations (one GIF decoder, right eye mirrored)
+            below the status bar. Clips: blink / happy / excited. Packaged into
+            the assets partition from main/assets/eyes/.
+
     config XIAOZHI_ENABLE_CAMERA_DEBUG_MODE
         bool "Enable Camera Debug Mode"
         default n

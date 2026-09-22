@@ -1,6 +1,6 @@
-# 语音对话与本地人脸追踪实现说明
+# 语音对话、本地人脸追踪与眼睛动画实现说明
 
-本文记录当前板级固件中 **语音（小智云端）** 与 **本地人脸追踪** 的实现方式。二者同时运行，且可独立开关。
+本文记录当前板级固件中 **语音（小智云端）**、**本地人脸追踪** 与 **双眼 GIF 动画** 的实现方式。三者可同时运行，且可独立开关。
 
 适用硬件：微雪 ESP32-P4-WIFI6-Touch-LCD-4.3（`esp32-p4x-wifi6-touch-lcd-4.3`），OV5647 MIPI 摄像头，32MB Flash。固件基于 [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) + ESP-IDF 6.1。
 
@@ -16,16 +16,20 @@ OV5647 MIPI --> EspVideo GrabFrame --> 240x240 下采样 --> ESP-DL MSR+MNP
                                           |
                                           +--> 屏幕通知栏坐标  face (x,y) / (nan,nan)
                                           +--> 左下角低分辨率预览（可关）
+
+assets/eyes/*.gif --> EyePlayer (单 GIF 解码) --> 上半屏双眼 400x200
+                                          左眼原图 / 右眼水平镜像
 ```
 
 设计原则：
 
 - **语音走云端**：设备只做前端处理与编解码，对话在 `xiaozhi.me`。
 - **人脸在本地**：不上传视频流；屏幕不显示完整人脸画面，默认只显示中心点坐标。
-- **互不阻塞**：人脸任务钉在 CPU1，语音 AFE / Opus 走原有音频路径。
-- **可独立关闭**：MCP 工具 `self.audio.set_enabled` 与 `self.face_track.set_enabled`。
+- **眼睛走 assets**：`blink` / `happy` / `excited` 打进 assets 分区；一个解码器，右眼运行时镜像。
+- **互不阻塞**：人脸任务钉在 CPU1，语音 AFE / Opus 走原有音频路径，眼睛走 LVGL 定时器。
+- **可独立关闭**：MCP `self.audio.set_enabled`、`self.face_track.set_enabled`、`self.eyes.set_enabled`。
 
-云端视频分析、WebRTC 推流尚未实现。
+云端视频分析、WebRTC 推流、瞳孔跟随（gaze）尚未实现。
 
 ---
 
@@ -195,7 +199,41 @@ espressif/human_face_detect
 
 ---
 
-## 4. 分区与编译
+## 4. 双眼 GIF 动画
+
+### 4.1 编译开关与素材
+
+```
+CONFIG_XIAOZHI_ENABLE_EYE_ANIM=y
+```
+
+素材目录：`main/assets/eyes/`（`blink.gif` / `happy.gif` / `excited.gif`，各 200×200、12fps）。  
+构建时经 `DEFAULT_ASSETS_EXTRA_FILES` 打进 `generated_assets.bin`（assets 分区），不膨胀 OTA app。
+
+源片来自 aime1 整脸 MP4，离线裁左眼并充满方框；右眼由固件水平镜像，不另存一份 GIF。
+
+### 4.2 布局与播放
+
+- 位置：状态栏 / `face (x,y)` 下方，居中 **400×200**（左右各 200×200）。
+- 一个 `LvglGif` 解码器；每帧把 ARGB8888 缓冲镜像到右眼 `lv_image`。
+- 默认 `blink` 循环；`happy` / `excited` 约播 2 遍（~8s）后自动回 `blink`。
+- 眼睛显示时隐藏居中 emoji；拍照预览时暂藏眼睛。
+
+启动：`Assets::Apply()` 之后 `EyePlayer::Start()`（`application.cc`）。
+
+### 4.3 MCP 工具
+
+| 工具 | 作用 |
+|------|------|
+| `self.eyes.set_enabled` | 开/关眼睛动画 |
+| `self.eyes.set_expr` | 切换 `blink` / `happy` / `excited`（别名 `smile`/`high`） |
+| `self.eyes.get_status` | JSON：`enabled` / `expr` |
+
+尚未做：瞳孔跟随人脸（gaze）。
+
+---
+
+## 5. 分区与编译
 
 人脸模型 + ESP-DL 使应用超过原 16MB 表的 4MB OTA 槽。本板 Flash 为 32MB，使用：
 
@@ -227,7 +265,7 @@ python -m esptool --chip esp32p4 -p /dev/ttyACM0 -b 460800 \
 
 ---
 
-## 5. 资源占用（实测，语音+追踪+预览同时开）
+## 6. 资源占用（实测，语音+追踪+预览同时开）
 
 | 项 | 数值 |
 |----|------|
@@ -236,6 +274,8 @@ python -m esptool --chip esp32p4 -p /dev/ttyACM0 -b 460800 \
 | 检测缓冲 | 240x240 RGB565 ≈ 113KB PSRAM |
 | 预览拷贝 | 再约 113KB PSRAM |
 | 摄像头整帧 | ≈ 1.28MB PSRAM（原采集路径） |
+| 眼睛 GIF（三份） | 约 749KB（assets 分区） |
+| 眼睛解码画布 | 200x200 ARGB8888 ≈ 160KB + 镜像缓冲 160KB PSRAM |
 | `face_track` 栈 | 8KB |
 | 片内 SRAM 剩余 | 约 122KB（最低约 115KB） |
 | CPU1 | 每 250ms 占用约 110-135ms（约 45%-55%） |
@@ -245,27 +285,31 @@ python -m esptool --chip esp32p4 -p /dev/ttyACM0 -b 460800 \
 
 ---
 
-## 6. 关键文件
+## 7. 关键文件
 
 | 文件 | 内容 |
 |------|------|
 | `main/face_tracker.cc` / `.h` | 追踪任务、MCP、YUV 采样、检测 |
-| `main/application.cc` | 激活后 `FaceTracker::Start()`；语音状态机 |
+| `main/eye_player.cc` / `.h` | 眼睛 clip 切换、MCP、回 blink 定时器 |
+| `main/assets/eyes/*.gif` | 左眼 GIF 素材 |
+| `main/application.cc` | 激活后 `FaceTracker::Start()`；assets 后 `EyePlayer::Start()` |
 | `main/audio/engines/afe_audio_engine.cc` | AFE / 唤醒 |
 | `main/protocols/websocket_protocol.cc` | 云端 Opus 会话 |
 | `main/boards/common/esp_video.cc` | 取帧、endian swap、互斥 |
-| `main/display/lcd_display.cc` | 调试小窗 canvas + cache sync |
+| `main/display/lcd_display.cc` | 调试小窗 + 双眼 UI / 镜像 |
 | `partitions/v2/32m_face.csv` | 32MB / 7MB OTA |
 | `main/boards/waveshare/esp32-p4-wifi6-touch-lcd/config.json` | 板级 sdkconfig 追加项 |
 
 ---
 
-## 7. 使用与排障
+## 8. 使用与排障
 
-- **怎么启动**：上电即可；屏幕顶部应出现 `face (nan,nan)` 或 `face (x,y)`。
-- **怎么看状态**：屏幕通知栏、串口 `FaceTracker` 日志、MCP `self.face_track.get_status`。
+- **怎么启动**：上电即可；屏幕顶部应出现 `face (nan,nan)` 或 `face (x,y)`；上半屏双眼默认 blink。
+- **怎么看状态**：屏幕通知栏、串口 `FaceTracker` / `EyePlayer` 日志、MCP `get_status`。
+- **切换眼睛**：MCP `self.eyes.set_expr`，参数 `blink` / `happy` / `excited`。
 - **小窗全黑**：检查 PSRAM `esp_cache_msync` 与 canvas 缓冲对齐。
 - **绿紫偏色**：YUV 排布与 `bswap16` 不匹配；本板应对 UYVY 帧按 **YUYV** 采样。
 - **很难检出**：看左下角构图、亮度、距离（约 0.5-1.5m 正对镜头）。
+- **眼睛不显示**：确认 assets 已重烧（含 `blink.gif`），串口无 `Eye asset missing`。
 
-语音与人脸默认同时开。只需语音时关追踪：`self.face_track.set_enabled`；只需追踪时关语音：`self.audio.set_enabled`。
+语音、人脸、眼睛默认同时开。只需语音时关追踪：`self.face_track.set_enabled`；关眼睛：`self.eyes.set_enabled`。

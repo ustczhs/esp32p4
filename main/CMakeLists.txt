@@ -47,6 +47,10 @@ if(CONFIG_XIAOZHI_ENABLE_FACE_TRACK)
     list(APPEND SOURCES "face_tracker.cc")
 endif()
 
+if(CONFIG_XIAOZHI_ENABLE_EYE_ANIM)
+    list(APPEND SOURCES "eye_player.cc")
+endif()
+
 set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg" "audio" "audio/demuxer" "protocols")
 
 # Add board common files
@@ -1280,6 +1284,13 @@ endforeach()
 endif()
 
 
+# Eye animation GIFs (blink/happy/excited) go into the default assets partition.
+# Do not overwrite ESP_HI's emoji staging path when that board is selected.
+if(CONFIG_XIAOZHI_ENABLE_EYE_ANIM AND NOT CONFIG_BOARD_TYPE_ESP_HI)
+    set(DEFAULT_ASSETS_EXTRA_FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/eyes")
+    message(STATUS "Eye anim assets: ${DEFAULT_ASSETS_EXTRA_FILES}")
+endif()
+
 # Function to build default assets based on configuration
 function(build_default_assets_bin)
     # Set output path for generated assets.bin
@@ -1320,6 +1331,10 @@ function(build_default_assets_bin)
     # Add default assets extra files if defined
     if(DEFAULT_ASSETS_EXTRA_FILES)
         list(APPEND BUILD_ARGS "--extra_files" "${DEFAULT_ASSETS_EXTRA_FILES}")
+        file(GLOB DEFAULT_EXTRA_ASSET_FILES CONFIGURE_DEPENDS
+            "${DEFAULT_ASSETS_EXTRA_FILES}/*"
+        )
+        list(APPEND DEFAULT_ASSETS_DEPENDENCIES ${DEFAULT_EXTRA_ASSET_FILES})
     endif()
 
     list(APPEND BUILD_ARGS "--esp_sr_model_path" "${ESP_SR_MODEL_PATH}")

@@ -84,6 +84,9 @@ public:
         (void)caption;
     }
     virtual void ClearDebugPreview() {}
+    // Dual-eye overlay: left uses image descriptor, right is a horizontal mirror.
+    virtual void SetEyeFrame(const void* image_dsc) { (void)image_dsc; }
+    virtual void ClearEyes() {}
     virtual bool SetTextFont(std::shared_ptr<LvglFont> text_font) {
         (void)text_font;
         return false;

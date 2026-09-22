@@ -42,7 +42,19 @@ protected:
     int debug_w_ = 0;
     int debug_h_ = 0;
 
+    // Dual-eye animation overlay (upper half, below status bar).
+    lv_obj_t* eye_box_ = nullptr;
+    lv_obj_t* eye_left_ = nullptr;
+    lv_obj_t* eye_right_ = nullptr;
+    lv_img_dsc_t eye_right_dsc_{};
+    uint8_t* eye_right_pixels_ = nullptr;
+    int eye_right_cap_ = 0;
+    int eye_frame_w_ = 0;
+    int eye_frame_h_ = 0;
+
     void EnsureDebugPreviewUi();
+    void EnsureEyeUi();
+    void FreeEyeMirrorBuffer();
     void InitializeLcdThemes();
     virtual bool Lock(int timeout_ms = 0) override;
     virtual void Unlock() override;
@@ -61,6 +73,8 @@ public:
     virtual void SetDebugPreviewRgb565(const uint16_t* pixels, int width, int height,
                                        const char* caption) override;
     virtual void ClearDebugPreview() override;
+    virtual void SetEyeFrame(const void* image_dsc) override;
+    virtual void ClearEyes() override;
     virtual void SetupUI() override;
     // Add theme switching function
     virtual void SetTheme(Theme* theme) override;
