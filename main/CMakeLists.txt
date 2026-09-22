@@ -43,6 +43,10 @@ set(SOURCES "audio/audio_codec.cc"
             "main.cc"
             )
 
+if(CONFIG_XIAOZHI_ENABLE_FACE_TRACK)
+    list(APPEND SOURCES "face_tracker.cc")
+endif()
+
 set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg" "audio" "audio/demuxer" "protocols")
 
 # Add board common files

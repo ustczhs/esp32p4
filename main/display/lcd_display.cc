@@ -6,6 +6,7 @@
 
 #include <esp_err.h>
 #include <esp_heap_caps.h>
+#include <esp_cache.h>
 #include <esp_log.h>
 #include <esp_lvgl_port.h>
 #include <esp_psram.h>
@@ -323,6 +324,18 @@ MipiLcdDisplay::MipiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel
 
 LcdDisplay::~LcdDisplay() {
     SetPreviewImage(nullptr);
+    ClearDebugPreview();
+    if (debug_preview_ != nullptr) {
+        lv_obj_del(debug_preview_);
+        debug_preview_ = nullptr;
+        debug_preview_img_ = nullptr;
+        debug_preview_label_ = nullptr;
+    }
+    if (debug_pixels_ != nullptr) {
+        heap_caps_free(debug_pixels_);
+        debug_pixels_ = nullptr;
+        debug_pixels_cap_ = 0;
+    }
 
     // Clean up GIF controller
     if (gif_controller_) {
@@ -1359,6 +1372,117 @@ void LcdDisplay::SetTheme(Theme* theme) {
 
     // No errors occurred. Save theme to settings
     Display::SetTheme(lvgl_theme);
+}
+
+void LcdDisplay::EnsureDebugPreviewUi() {
+    if (debug_preview_ != nullptr) {
+        return;
+    }
+    auto screen = lv_screen_active();
+    if (screen == nullptr) {
+        return;
+    }
+
+    debug_preview_ = lv_obj_create(screen);
+    lv_obj_set_size(debug_preview_, 176, 200);
+    lv_obj_align(debug_preview_, LV_ALIGN_BOTTOM_LEFT, 8, -8);
+    lv_obj_set_style_pad_all(debug_preview_, 6, 0);
+    lv_obj_set_style_pad_row(debug_preview_, 4, 0);
+    lv_obj_set_flex_flow(debug_preview_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(debug_preview_, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_radius(debug_preview_, 6, 0);
+    lv_obj_set_style_border_width(debug_preview_, 2, 0);
+    lv_obj_set_style_border_color(debug_preview_, lv_color_hex(0x00FF66), 0);
+    // Light panel so a black/failed image is obvious vs "empty chrome".
+    lv_obj_set_style_bg_color(debug_preview_, lv_color_hex(0xC0C0C0), 0);
+    lv_obj_set_style_bg_opa(debug_preview_, LV_OPA_COVER, 0);
+    lv_obj_set_scrollbar_mode(debug_preview_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(debug_preview_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(debug_preview_, LV_OBJ_FLAG_FLOATING);
+
+    debug_preview_img_ = lv_canvas_create(debug_preview_);
+    lv_obj_set_size(debug_preview_img_, 160, 160);
+    lv_obj_set_style_border_width(debug_preview_img_, 1, 0);
+    lv_obj_set_style_border_color(debug_preview_img_, lv_color_hex(0x333333), 0);
+
+    debug_preview_label_ = lv_label_create(debug_preview_);
+    lv_obj_set_width(debug_preview_label_, 160);
+    lv_label_set_long_mode(debug_preview_label_, LV_LABEL_LONG_CLIP);
+    lv_obj_set_style_text_align(debug_preview_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(debug_preview_label_, lv_color_hex(0x111111), 0);
+    lv_label_set_text(debug_preview_label_, "face preview");
+}
+
+void LcdDisplay::SetDebugPreviewRgb565(const uint16_t* pixels, int width, int height,
+                                       const char* caption) {
+    if (pixels == nullptr || width <= 0 || height <= 0) {
+        return;
+    }
+
+    DisplayLockGuard lock(this);
+    if (!lock) {
+        return;
+    }
+    EnsureDebugPreviewUi();
+    if (debug_preview_ == nullptr || debug_preview_img_ == nullptr) {
+        return;
+    }
+
+    const int need = width * height;
+    const size_t bytes = (size_t)need * sizeof(uint16_t);
+    if (debug_pixels_ == nullptr || debug_pixels_cap_ < need || debug_w_ != width ||
+        debug_h_ != height) {
+        if (debug_pixels_ != nullptr) {
+            heap_caps_free(debug_pixels_);
+            debug_pixels_ = nullptr;
+            debug_pixels_cap_ = 0;
+        }
+        // 64-byte align for cache-line clean before LVGL/DMA read from PSRAM.
+        debug_pixels_ = (uint16_t*)heap_caps_aligned_alloc(64, bytes,
+                                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (debug_pixels_ == nullptr) {
+            ESP_LOGE(TAG, "debug preview alloc failed (%dx%d)", width, height);
+            return;
+        }
+        debug_pixels_cap_ = need;
+        debug_w_ = width;
+        debug_h_ = height;
+        lv_canvas_set_buffer(debug_preview_img_, debug_pixels_, width, height,
+                             LV_COLOR_FORMAT_RGB565);
+        lv_obj_set_size(debug_preview_img_, width, height);
+        // Fit into 160px box.
+        int scale = (width > height) ? (160 * 256 / width) : (160 * 256 / height);
+        if (scale > 256) scale = 256;
+        if (scale < 64) scale = 64;
+        lv_image_set_scale(debug_preview_img_, scale);
+    }
+
+    memcpy(debug_pixels_, pixels, bytes);
+
+#if CONFIG_SPIRAM
+    esp_err_t sync = esp_cache_msync(debug_pixels_, bytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    if (sync != ESP_OK) {
+        ESP_LOGW(TAG, "debug preview cache sync failed: %s", esp_err_to_name(sync));
+    }
+#endif
+
+    lv_obj_remove_flag(debug_preview_, LV_OBJ_FLAG_HIDDEN);
+    if (debug_preview_label_ != nullptr && caption != nullptr) {
+        lv_label_set_text(debug_preview_label_, caption);
+    }
+    lv_obj_invalidate(debug_preview_img_);
+    lv_obj_invalidate(debug_preview_);
+}
+
+void LcdDisplay::ClearDebugPreview() {
+    DisplayLockGuard lock(this);
+    if (!lock) {
+        return;
+    }
+    if (debug_preview_ != nullptr) {
+        lv_obj_add_flag(debug_preview_, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 void LcdDisplay::SetHideSubtitle(bool hide) {

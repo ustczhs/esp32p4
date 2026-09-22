@@ -412,6 +412,15 @@ void EspVideo::SetExplainUrl(const std::string& url, const std::string& token) {
 }
 
 bool EspVideo::Capture() {
+    return GrabFrame(nullptr, true);
+}
+
+bool EspVideo::GrabFrame(CameraFrame* out, bool update_preview) {
+    std::lock_guard<std::mutex> lock(capture_mutex_);
+    return GrabFrameLocked(out, update_preview);
+}
+
+bool EspVideo::GrabFrameLocked(CameraFrame* out, bool update_preview) {
     if (encoder_thread_.joinable()) {
         encoder_thread_.join();
     }
@@ -449,11 +458,11 @@ bool EspVideo::Capture() {
             }
 
 #ifdef CONFIG_XIAOZHI_ENABLE_ROTATE_CAMERA_IMAGE
-            ESP_LOGW(TAG,
+            ESP_LOGD(TAG,
                      "mmap_buffers_[buf.index].length = %d, sensor_width = %d, sensor_height = %d",
                      mmap_buffers_[buf.index].length, sensor_width_, sensor_height_);
 #else
-            ESP_LOGW(TAG,
+            ESP_LOGD(TAG,
                      "mmap_buffers_[buf.index].length = %d, frame.width = %d, frame.height = %d",
                      mmap_buffers_[buf.index].length, frame_.width, frame_.height);
 #endif  // CONFIG_XIAOZHI_ENABLE_ROTATE_CAMERA_IMAGE
@@ -773,7 +782,8 @@ bool EspVideo::Capture() {
         }
     }
 
-    // 显示预览图片
+    // 显示预览图片（人脸追踪等分析路径跳过，节省算力）
+    if (update_preview) {
     auto display = Board::GetInstance().GetDisplay();
     if (display != nullptr) {
         if (!frame_.data) {
@@ -885,6 +895,15 @@ bool EspVideo::Capture() {
             std::make_unique<LvglAllocatedImage>(data, lvgl_image_size, w, h, stride, color_format);
         display->SetPreviewImage(std::move(image));
     }
+    }  // update_preview
+
+    if (out != nullptr) {
+        out->data = frame_.data;
+        out->len = frame_.len;
+        out->width = frame_.width;
+        out->height = frame_.height;
+        out->format = frame_.format;
+    }
     return true;
 }
 
@@ -943,8 +962,12 @@ bool EspVideo::SetVFlip(bool enabled) {
  * @warning 如果摄像头缓冲区为空或网络连接失败，将返回错误信息
  */
 std::expected<std::string, std::string> EspVideo::Explain(const std::string& question) {
+    std::lock_guard<std::mutex> lock(capture_mutex_);
     if (explain_url_.empty()) {
         return std::unexpected("Image explain URL or token is not set");
+    }
+    if (!GrabFrameLocked(nullptr, true)) {
+        return std::unexpected("Failed to capture photo");
     }
 
     // 创建局部的 JPEG 队列, 40 entries is about to store 512 * 40 = 20480 bytes of JPEG data

@@ -33,6 +33,16 @@ protected:
     std::unique_ptr<LvglImage> preview_image_cached_ = nullptr;
     bool hide_subtitle_ = false;  // Control whether to hide chat messages/subtitles
 
+    // Persistent low-res debug camera overlay (face track).
+    lv_obj_t* debug_preview_ = nullptr;
+    lv_obj_t* debug_preview_img_ = nullptr;  // lv_canvas
+    lv_obj_t* debug_preview_label_ = nullptr;
+    uint16_t* debug_pixels_ = nullptr;
+    int debug_pixels_cap_ = 0;
+    int debug_w_ = 0;
+    int debug_h_ = 0;
+
+    void EnsureDebugPreviewUi();
     void InitializeLcdThemes();
     virtual bool Lock(int timeout_ms = 0) override;
     virtual void Unlock() override;
@@ -48,6 +58,9 @@ public:
     virtual void SetChatMessage(const char* role, const char* content) override;
     virtual void ClearChatMessages() override;
     virtual void SetPreviewImage(std::unique_ptr<LvglImage> image) override;
+    virtual void SetDebugPreviewRgb565(const uint16_t* pixels, int width, int height,
+                                       const char* caption) override;
+    virtual void ClearDebugPreview() override;
     virtual void SetupUI() override;
     // Add theme switching function
     virtual void SetTheme(Theme* theme) override;

@@ -103,10 +103,9 @@ void McpServer::AddCommonTools() {
                     // Lower the priority to do the camera capture
                     TaskPriorityReset priority_reset(1);
 
-                    if (!camera->Capture()) {
-                        return std::unexpected("Failed to capture photo");
-                    }
                     auto question = properties["question"].value<std::string>();
+                    // Explain() grabs a frame under its own lock so face tracking
+                    // cannot overwrite the buffer mid-upload.
                     auto result = camera->Explain(question);
                     if (!result) {
                         return std::unexpected(std::move(result.error()));

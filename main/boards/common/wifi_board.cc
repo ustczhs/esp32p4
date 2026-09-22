@@ -17,6 +17,7 @@
 #include <wifi_manager.h>
 #include <wifi_station.h>
 #include <ssid_manager.h>
+#include "local_wifi.h"
 #ifdef CONFIG_USE_ESP_BLUFI_WIFI_PROVISIONING
 #include "blufi.h"
 #endif
@@ -99,6 +100,10 @@ void WifiBoard::StartNetwork() {
 
 void WifiBoard::TryWifiConnect() {
     auto& ssid_manager = SsidManager::GetInstance();
+    if (ssid_manager.GetSsidList().empty()) {
+        ESP_LOGI(TAG, "No saved WiFi, seeding local SSID");
+        ssid_manager.AddSsid(LOCAL_WIFI_SSID, LOCAL_WIFI_PASSWORD);
+    }
     bool have_ssid = !ssid_manager.GetSsidList().empty();
 
     if (have_ssid) {

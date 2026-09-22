@@ -5,6 +5,9 @@
 #include "board.h"
 #include "cjson_utils.h"
 #include "display.h"
+#if CONFIG_XIAOZHI_ENABLE_FACE_TRACK
+#include "face_tracker.h"
+#endif
 #include "mcp_server.h"
 #include "mqtt_protocol.h"
 #include "settings.h"
@@ -360,6 +363,10 @@ void Application::HandleActivationDoneEvent() {
             audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
         });
     }
+
+#if CONFIG_XIAOZHI_ENABLE_FACE_TRACK
+    FaceTracker::GetInstance().Start();
+#endif
 }
 
 void Application::ActivationTask() {

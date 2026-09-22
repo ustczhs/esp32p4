@@ -75,6 +75,15 @@ public:
     }
     virtual void LoadAssets() {}
     virtual void SetPreviewImage(std::unique_ptr<LvglImage> image);
+    // Low-res RGB565 debug overlay (corner). pixels may be freed after return.
+    virtual void SetDebugPreviewRgb565(const uint16_t* pixels, int width, int height,
+                                       const char* caption) {
+        (void)pixels;
+        (void)width;
+        (void)height;
+        (void)caption;
+    }
+    virtual void ClearDebugPreview() {}
     virtual bool SetTextFont(std::shared_ptr<LvglFont> text_font) {
         (void)text_font;
         return false;

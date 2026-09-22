@@ -13,6 +13,8 @@
 #include "esp_video_init.h"
 #include "jpg/image_to_jpeg.h"
 
+#include <mutex>
+
 struct JpegChunk {
     uint8_t* data;
     size_t len;
@@ -20,6 +22,7 @@ struct JpegChunk {
 
 class EspVideo : public Camera {
 private:
+    std::mutex capture_mutex_;
     struct FrameBuffer {
         uint8_t* data = nullptr;
         size_t len = 0;
@@ -48,9 +51,13 @@ public:
     ~EspVideo() override;
 
     virtual void SetExplainUrl(const std::string& url, const std::string& token);
-    virtual bool Capture();
+    virtual bool Capture() override;
+    virtual bool GrabFrame(CameraFrame* out, bool update_preview) override;
     // 翻转控制函数
     virtual bool SetHMirror(bool enabled) override;
     virtual bool SetVFlip(bool enabled) override;
     virtual std::expected<std::string, std::string> Explain(const std::string& question) override;
+
+private:
+    bool GrabFrameLocked(CameraFrame* out, bool update_preview);
 };

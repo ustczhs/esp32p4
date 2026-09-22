@@ -1070,6 +1070,15 @@ menu "Camera Configuration"
             Use hardware JPEG decoder on ESP32-P4 to decode JPEG to image.
             See https://docs.espressif.com/projects/esp-idf/en/stable/esp32p4/api-reference/peripherals/jpeg.html for more details.
 
+    config XIAOZHI_ENABLE_FACE_TRACK
+        bool "Enable local face tracking"
+        default n
+        depends on IDF_TARGET_ESP32P4
+        help
+            Run lightweight on-device face detection (ESP-DL MSR+MNP) and show
+            face center coordinates on the status notification. Camera preview
+            is not shown. Can be toggled at runtime via MCP.
+
     config XIAOZHI_ENABLE_CAMERA_DEBUG_MODE
         bool "Enable Camera Debug Mode"
         default n
