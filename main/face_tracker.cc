@@ -7,6 +7,7 @@
 #include "application.h"
 #include "board.h"
 #include "camera.h"
+#include "camera_hub.h"
 #include "device_state.h"
 #include "display.h"
 #include "mcp_server.h"
@@ -130,7 +131,10 @@ void FaceTracker::Start() {
 
     Settings settings("face", false);
     enabled_.store(settings.GetBool("enabled", true));
-    preview_enabled_.store(settings.GetBool("preview", true));
+    preview_enabled_.store(settings.GetBool("preview", false));
+
+    CameraHub::GetInstance().Start();
+    CameraHub::GetInstance().SetFaceConsumer(enabled_.load());
 
     auto& mcp = McpServer::GetInstance();
     mcp.AddUserOnlyTool(
@@ -205,6 +209,7 @@ void FaceTracker::Start() {
 
 void FaceTracker::SetEnabled(bool enabled) {
     enabled_.store(enabled);
+    CameraHub::GetInstance().SetFaceConsumer(enabled);
     Settings settings("face", true);
     settings.SetBool("enabled", enabled);
     auto display = Board::GetInstance().GetDisplay();
@@ -271,6 +276,7 @@ void FaceTracker::RunLoop() {
     float smooth_y = 0;
     bool smoothed = false;
     int idle_log = 0;
+    uint32_t last_hub_seq = 0;
 
     while (true) {
         if (!enabled_.load()) {
@@ -282,22 +288,20 @@ void FaceTracker::RunLoop() {
             continue;
         }
 
-        auto camera = Board::GetInstance().GetCamera();
-        if (camera == nullptr) {
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            continue;
-        }
-
         CameraFrame frame;
+        uint32_t seq = 0;
         int64_t t0 = esp_timer_get_time();
-        if (!camera->GrabFrame(&frame, false) || frame.data == nullptr || frame.width == 0 ||
-            frame.height == 0) {
+        // Fan-out: one capture in CameraHub, shared with H.264 streamer.
+        if (!CameraHub::GetInstance().AcquireLatest(&frame, &seq, last_hub_seq,
+                                                    pdMS_TO_TICKS(kLoopDelayMs + 100)) ||
+            frame.data == nullptr || frame.width == 0 || frame.height == 0) {
             if (++idle_log % 20 == 1) {
-                ESP_LOGW(TAG, "GrabFrame failed");
+                ESP_LOGW(TAG, "CameraHub AcquireLatest failed");
             }
-            vTaskDelay(pdMS_TO_TICKS(kLoopDelayMs));
+            vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
+        last_hub_seq = seq;
 
         frame_w_.store(frame.width);
         frame_h_.store(frame.height);
@@ -305,8 +309,6 @@ void FaceTracker::RunLoop() {
         bool ok_scale = false;
 #if CONFIG_XIAOZHI_ENABLE_CAMERA_ENDIANNESS_SWAP
         // GrabFrame applies bswap16 on packed pixels: UYVY bytes become YUYV layout.
-        // Sample the post-swap layout. (An older fallback tried the other layout for
-        // detection and left it on screen ? green/magenta cast.)
         const uint32_t sample_fmt =
             (frame.format == V4L2_PIX_FMT_UYVY)   ? V4L2_PIX_FMT_YUYV
             : (frame.format == V4L2_PIX_FMT_YUYV) ? V4L2_PIX_FMT_UYVY
@@ -334,10 +336,13 @@ void FaceTracker::RunLoop() {
         };
 
         if (!scale_to(sample_fmt)) {
+            CameraHub::GetInstance().ReleaseFrame(seq);
             ESP_LOGW(TAG, "Unsupported format 0x%08lx for face track", (unsigned long)frame.format);
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }
+        // Release hub buffer before heavy inference so streamer can keep capturing.
+        CameraHub::GetInstance().ReleaseFrame(seq);
         ok_scale = true;
         (void)ok_scale;
 

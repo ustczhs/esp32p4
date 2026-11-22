@@ -8,8 +8,14 @@
 #if CONFIG_XIAOZHI_ENABLE_FACE_TRACK
 #include "face_tracker.h"
 #endif
+#if CONFIG_XIAOZHI_ENABLE_VIDEO_STREAM
+#include "video_streamer.h"
+#endif
 #if CONFIG_XIAOZHI_ENABLE_EYE_ANIM
 #include "eye_player.h"
+#endif
+#if CONFIG_CLAW_ENABLE
+#include "claw_port.h"
 #endif
 #include "mcp_server.h"
 #include "mqtt_protocol.h"
@@ -73,6 +79,11 @@ void Application::Initialize() {
     display->SetupUI();
     // Print board name/version info
     display->SetChatMessage("system", SystemInfo::GetUserAgent().c_str());
+
+    // Reserve H.264 INTERNAL ref buffers before AFE eats contiguous SRAM.
+#if CONFIG_XIAOZHI_ENABLE_VIDEO_STREAM
+    VideoStreamer::GetInstance().ReserveEncoderEarly();
+#endif
 
     // Setup the audio service
     auto codec = board.GetAudioCodec();
@@ -368,7 +379,14 @@ void Application::HandleActivationDoneEvent() {
     }
 
 #if CONFIG_XIAOZHI_ENABLE_FACE_TRACK
-    FaceTracker::GetInstance().Start();
+    // Face tracking disabled locally: no detection, no "face (nan,nan)" notification, no preview.
+    // FaceTracker::GetInstance().Start();
+#endif
+#if CONFIG_XIAOZHI_ENABLE_VIDEO_STREAM
+    VideoStreamer::GetInstance().Start();
+#endif
+#if CONFIG_CLAW_ENABLE
+    ClawPortStart();
 #endif
 }
 
@@ -639,6 +657,9 @@ void Application::InitializeProtocol() {
             if (strcmp(state->valuestring, "start") == 0) {
                 Schedule([this]() {
                     aborted_ = false;
+#if CONFIG_CLAW_ENABLE
+                    claw_tts_text_.clear();
+#endif
                     SetDeviceState(kDeviceStateSpeaking);
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
@@ -650,6 +671,12 @@ void Application::InitializeProtocol() {
                             SetDeviceState(kDeviceStateListening);
                         }
                     }
+#if CONFIG_CLAW_ENABLE
+                    if (!claw_tts_text_.empty()) {
+                        ESP_LOGI(TAG, "claw tts full: %s", claw_tts_text_.c_str());
+                        claw_tts_text_.clear();
+                    }
+#endif
                 });
             } else if (strcmp(state->valuestring, "sentence_start") == 0) {
                 auto text = cJSON_GetObjectItem(root, "text");
@@ -660,8 +687,11 @@ void Application::InitializeProtocol() {
                         glyphs.clear();
                     }
                     ESP_LOGI(TAG, "<< %s", text->valuestring);
-                    Schedule([display, message = std::string(text->valuestring),
+                    Schedule([this, display, message = std::string(text->valuestring),
                               glyphs = std::move(glyphs), bpp]() {
+#if CONFIG_CLAW_ENABLE
+                        claw_tts_text_ += message;
+#endif
                         display->AddTextGlyphs(glyphs, bpp);
                         display->SetChatMessage("assistant", message.c_str());
                     });
@@ -687,6 +717,9 @@ void Application::InitializeProtocol() {
             if (cJSON_IsString(emotion)) {
                 Schedule([display, emotion_str = std::string(emotion->valuestring)]() {
                     display->SetEmotion(emotion_str.c_str());
+#if CONFIG_XIAOZHI_ENABLE_EYE_ANIM
+                    EyePlayer::GetInstance().SetExprFromEmotion(emotion_str);
+#endif
                 });
             }
         } else if (strcmp(type->valuestring, "mcp") == 0) {
@@ -770,6 +803,9 @@ void Application::Alert(const char* status, const char* message, const char* emo
     auto display = Board::GetInstance().GetDisplay();
     display->SetStatus(status);
     display->SetEmotion(emotion);
+#if CONFIG_XIAOZHI_ENABLE_EYE_ANIM
+    EyePlayer::GetInstance().SetExprFromEmotion(emotion);
+#endif
     display->SetChatMessage("system", message);
     if (!sound.empty()) {
         audio_service_.PlaySound(sound);
@@ -1007,6 +1043,69 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
 #endif
 }
 
+#if CONFIG_CLAW_ENABLE
+void Application::ClawAnnounce(const std::string& summary, const std::string& full_text) {
+    Schedule([this, summary, full_text]() {
+        claw_full_text_ = full_text;
+        auto display = Board::GetInstance().GetDisplay();
+        if (display != nullptr) {
+            display->SetChatMessage("assistant", full_text.c_str());
+        }
+        if (GetDeviceState() == kDeviceStateIdle) {
+            ClawInjectDetect(summary);
+        } else {
+            if (claw_announce_queue_.size() >= 3) {
+                claw_announce_queue_.pop_front();
+            }
+            claw_announce_queue_.push_back(summary);
+        }
+    });
+}
+
+void Application::ClawInjectDetect(const std::string& summary) {
+    if (GetDeviceState() != kDeviceStateIdle) {
+        if (claw_announce_queue_.size() >= 3) {
+            claw_announce_queue_.pop_front();
+        }
+        claw_announce_queue_.push_back(summary);
+        return;
+    }
+    if (!protocol_) {
+        return;
+    }
+    // Manual-stop makes tts stop return to idle instead of opening the mic.
+    listening_mode_ = kListeningModeManualStop;
+    if (!protocol_->IsAudioChannelOpened()) {
+        Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+        if (!protocol_->OpenAudioChannel()) {
+            ESP_LOGW(TAG, "claw announce: open audio channel failed");
+            return;
+        }
+    }
+    // SendWakeWordDetected concatenates raw text into JSON; escape it here.
+    std::string escaped;
+    for (char c : summary) {
+        switch (c) {
+            case '"': escaped += "\\\""; break;
+            case '\\': escaped += "\\\\"; break;
+            case '\n': escaped += "\\n"; break;
+            case '\r': escaped += "\\r"; break;
+            case '\t': escaped += "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    char buf[8];
+                    snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(c));
+                    escaped += buf;
+                } else {
+                    escaped += c;
+                }
+        }
+    }
+    ESP_LOGI(TAG, "claw announce inject: %s", summary.c_str());
+    protocol_->SendWakeWordDetected(escaped);
+}
+#endif
+
 void Application::HandleStateChangedEvent() {
     DeviceState new_state = state_machine_.GetState();
     clock_ticks_ = 0;
@@ -1030,18 +1129,42 @@ void Application::HandleStateChangedEvent() {
                 display->ClearChatMessages();  // Clear messages first
                 display->SetEmotion(
                     "neutral");  // Then set emotion (wechat mode checks child count)
+#if CONFIG_XIAOZHI_ENABLE_EYE_ANIM
+                EyePlayer::GetInstance().SetExprFromEmotion("neutral");
+#endif
             }
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(true);
+#if CONFIG_CLAW_ENABLE
+            if (!claw_full_text_.empty() && last_error_message_.empty()) {
+                display->SetChatMessage("assistant", claw_full_text_.c_str());
+            }
+            if (!claw_announce_queue_.empty()) {
+                Schedule([this]() {
+                    if (claw_announce_queue_.empty()) {
+                        return;
+                    }
+                    auto summary = claw_announce_queue_.front();
+                    claw_announce_queue_.pop_front();
+                    ClawInjectDetect(summary);
+                });
+            }
+#endif
             break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);
             display->SetEmotion("neutral");
             display->SetChatMessage("system", "");
+#if CONFIG_CLAW_ENABLE
+            claw_full_text_.clear();
+#endif
             break;
         case kDeviceStateListening:
             display->SetStatus(Lang::Strings::LISTENING);
             display->SetEmotion("neutral");
+#if CONFIG_CLAW_ENABLE
+            claw_full_text_.clear();
+#endif
 
             // Make sure the audio processor is running
             if (play_popup_on_listening_ || !audio_service_.IsAudioProcessorRunning()) {

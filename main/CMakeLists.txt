@@ -47,6 +47,14 @@ if(CONFIG_XIAOZHI_ENABLE_FACE_TRACK)
     list(APPEND SOURCES "face_tracker.cc")
 endif()
 
+if(CONFIG_XIAOZHI_ENABLE_FACE_TRACK OR CONFIG_XIAOZHI_ENABLE_VIDEO_STREAM)
+    list(APPEND SOURCES "camera_hub.cc")
+endif()
+
+if(CONFIG_XIAOZHI_ENABLE_VIDEO_STREAM)
+    list(APPEND SOURCES "video_streamer.cc")
+endif()
+
 if(CONFIG_XIAOZHI_ENABLE_EYE_ANIM)
     list(APPEND SOURCES "eye_player.cc")
 endif()
@@ -1096,6 +1104,22 @@ if(CONFIG_BOARD_TYPE_ESP32_P4_FUNCTION_EV_BOARD)
         sdmmc
     )
 endif()
+# Dependency collection runs in an early-expansion pass where CONFIG_
+# variables are not defined; the root CMakeLists publishes the CLAW_ENABLE
+# decision as a build property that is readable in both passes.
+idf_build_get_property(CLAW_BUILD_ENABLED CLAW_BUILD_ENABLED)
+if(CLAW_BUILD_ENABLED)
+    list(APPEND SOURCES "claw/claw_port.cc" "claw/xiaozhi_bridge.cc" "claw/wechat_cli.cc")
+    list(APPEND INCLUDE_DIRS "claw")
+    list(APPEND MAIN_PRIV_REQUIRES_EXTRA
+        claw_core
+        claw_cap
+        claw_manager
+        claw_event_router
+        cap_im_platform
+        cap_system
+    )
+endif()
 idf_component_register(SRCS ${SOURCES}
                     EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS}
                     INCLUDE_DIRS ${INCLUDE_DIRS}
@@ -1105,6 +1129,8 @@ idf_component_register(SRCS ${SOURCES}
                         esp_psram
                         esp_netif
                         esp_eth
+                        esp_http_server
+                        espressif__esp_h264
                         esp_driver_gpio
                         esp_driver_uart
                         esp_driver_spi
@@ -1284,10 +1310,10 @@ endforeach()
 endif()
 
 
-# Eye animation GIFs (blink/happy/excited) go into the default assets partition.
+# Eye animation GIFs (stitched L+R 400x200) go into the default assets partition.
 # Do not overwrite ESP_HI's emoji staging path when that board is selected.
 if(CONFIG_XIAOZHI_ENABLE_EYE_ANIM AND NOT CONFIG_BOARD_TYPE_ESP_HI)
-    set(DEFAULT_ASSETS_EXTRA_FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/eyes")
+    set(DEFAULT_ASSETS_EXTRA_FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/eyes_all")
     message(STATUS "Eye anim assets: ${DEFAULT_ASSETS_EXTRA_FILES}")
 endif()
 

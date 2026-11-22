@@ -4,6 +4,10 @@
 #include "display/lcd_display.h"
 // #include "display/no_display.h"
 #include "button.h"
+#include "sdkconfig.h"
+#if CONFIG_XIAOZHI_ENABLE_EYE_ANIM
+#include "eye_player.h"
+#endif
 
 #include "esp_video.h"
 #include "esp_video_init.h"
@@ -436,6 +440,13 @@ private:
             }
             app.ToggleChatState();
         });
+#if CONFIG_XIAOZHI_ENABLE_EYE_ANIM
+        // Double-click BOOT to cycle eye expressions without opening chat.
+        // Must Schedule: LoadClip creates/deletes lv_timer and must not run on button task.
+        boot_button_.OnDoubleClick([]() {
+            EyePlayer::GetInstance().RequestCycleNext();
+        });
+#endif
     }
 
 public:

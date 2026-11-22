@@ -26,11 +26,11 @@ dependencies:
   espressif/esp_audio_codec: ~2.5.0
   78/esp-ml307: ~3.7.3
   78/uart-uhci:
-    version: ^0.3.3
+    version: ^0.4.1
     rules:
     - if: target not in [esp32]
   78/uart-eth-modem:
-    version: ~0.6.5
+    version: ~0.7.1
     rules:
     - if: target not in [esp32]
   78/xiaozhi-fonts: ~2.0.0
@@ -48,7 +48,9 @@ dependencies:
     rules:
     - if: target in [esp32s3]
   espressif/esp_video:
-    version: ^2.4.1
+    # Pinned: newer esp_video manifests reference ESP_VIDEO_USE_CUSTOMIZED_ESP_H264_VERSION,
+    # which is undefined in this locked component set and breaks dependency resolution.
+    version: ==2.4.1
     rules:
     - if: target in [esp32p4, esp32s3, esp32s31]
   espressif/human_face_detect:

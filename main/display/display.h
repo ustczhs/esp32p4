@@ -84,8 +84,10 @@ public:
         (void)caption;
     }
     virtual void ClearDebugPreview() {}
-    // Dual-eye overlay: left uses image descriptor, right is a horizontal mirror.
+    // Dual-eye overlay: pre-stitched 400x200 GIF (left+right already combined).
     virtual void SetEyeFrame(const void* image_dsc) { (void)image_dsc; }
+    /** Drop lv_image src pointers before freeing the GIF canvas (call under DisplayLockGuard). */
+    virtual void DetachEyeImageSrc() {}
     virtual void ClearEyes() {}
     virtual bool SetTextFont(std::shared_ptr<LvglFont> text_font) {
         (void)text_font;

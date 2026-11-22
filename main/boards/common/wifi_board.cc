@@ -5,6 +5,10 @@
 #include "system_info.h"
 #include "settings.h"
 #include "assets/lang_config.h"
+#include "sdkconfig.h"
+#if CONFIG_XIAOZHI_ENABLE_VIDEO_STREAM
+#include "video_streamer.h"
+#endif
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -100,9 +104,24 @@ void WifiBoard::StartNetwork() {
 
 void WifiBoard::TryWifiConnect() {
     auto& ssid_manager = SsidManager::GetInstance();
-    if (ssid_manager.GetSsidList().empty()) {
-        ESP_LOGI(TAG, "No saved WiFi, seeding local SSID");
-        ssid_manager.AddSsid(LOCAL_WIFI_SSID, LOCAL_WIFI_PASSWORD);
+    bool local_known = false;
+    for (const auto& item : ssid_manager.GetSsidList()) {
+        if (item.ssid == LOCAL_WIFI_SSID) {
+            local_known = true;
+            break;
+        }
+    }
+    // AddSsid also refreshes the password when the SSID is already saved.
+    ssid_manager.AddSsid(LOCAL_WIFI_SSID, LOCAL_WIFI_PASSWORD);
+    if (!local_known) {
+        ESP_LOGI(TAG, "Seeding local SSID %s as preferred network", LOCAL_WIFI_SSID);
+        const auto& list = ssid_manager.GetSsidList();
+        for (size_t i = 0; i < list.size(); ++i) {
+            if (list[i].ssid == LOCAL_WIFI_SSID) {
+                ssid_manager.SetDefaultSsid(static_cast<int>(i));
+                break;
+            }
+        }
     }
     bool have_ssid = !ssid_manager.GetSsidList().empty();
 
@@ -285,6 +304,13 @@ std::string WifiBoard::GetBoardJson() {
 }
 
 void WifiBoard::SetPowerSaveLevel(PowerSaveLevel level) {
+#if CONFIG_XIAOZHI_ENABLE_VIDEO_STREAM
+    // Wi-Fi modem sleep makes LAN TCP (ffplay/VLC) intermittently time out.
+    if (level != PowerSaveLevel::PERFORMANCE && VideoStreamer::GetInstance().IsEnabled()) {
+        ESP_LOGI(TAG, "Keep Wi-Fi PERFORMANCE while H.264 stream is on");
+        level = PowerSaveLevel::PERFORMANCE;
+    }
+#endif
     WifiPowerSaveLevel wifi_level;
     switch (level) {
         case PowerSaveLevel::LOW_POWER:

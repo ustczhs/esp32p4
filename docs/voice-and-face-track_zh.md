@@ -31,6 +31,8 @@ assets/eyes/*.gif --> EyePlayer (单 GIF 解码) --> 上半屏双眼 400x200
 
 云端视频分析、WebRTC 推流、瞳孔跟随（gaze）尚未实现。
 
+局域网 H.264 预览（第一版）见 [`video-stream_zh.md`](./video-stream_zh.md)：`CameraHub` 一帧多用 + 硬件编码 + `http://IP:8080/stream.h264`。
+
 ---
 
 ## 2. 语音实现
@@ -138,7 +140,7 @@ espressif/human_face_detect
 
 `Start()` 会：
 
-1. 从 NVS `face` 读取 `enabled` / `preview`（默认均为 true）。
+1. 从 NVS `face` 读取 `enabled`（默认 true）/ `preview`（默认 false，不在屏幕上显示摄像头预览）。
 2. 注册 MCP 工具。
 3. 创建任务 `face_track`：栈 8KB，优先级 3，钉在 **CPU1**。
 
@@ -201,6 +203,8 @@ espressif/human_face_detect
 
 ## 4. 双眼 GIF 动画
 
+实现细节（素材约定、LoadClip、线程安全、MCP）见独立文档：[eye-anim_zh.md](./eye-anim_zh.md)。
+
 ### 4.1 编译开关与素材
 
 ```
@@ -221,13 +225,14 @@ CONFIG_XIAOZHI_ENABLE_EYE_ANIM=y
 
 启动：`Assets::Apply()` 之后 `EyePlayer::Start()`（`application.cc`）。
 
-### 4.3 MCP 工具
+### 4.3 如何切换表情
 
-| 工具 | 作用 |
+| 方式 | 操作 |
 |------|------|
-| `self.eyes.set_enabled` | 开/关眼睛动画 |
-| `self.eyes.set_expr` | 切换 `blink` / `happy` / `excited`（别名 `smile`/`high`） |
-| `self.eyes.get_status` | JSON：`enabled` / `expr` |
+| **语音** | 说「眼睛开心一点」「切换到兴奋表情」「换个眼睛表情」等，云端会调 MCP |
+| **BOOT 双击** | 板载 BOOT 键双击，循环 blink → happy → excited → blink，顶栏提示 `eyes: xxx` |
+| **对话情绪** | 云端下发 `llm.emotion`（如 happy/laughing）时自动映射到眼睛 |
+| **MCP** | `self.eyes.set_expr`（`blink`/`happy`/`excited`）、`self.eyes.next` |
 
 尚未做：瞳孔跟随人脸（gaze）。
 

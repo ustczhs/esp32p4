@@ -1084,9 +1084,20 @@ menu "Camera Configuration"
         default n
         depends on IDF_TARGET_ESP32P4
         help
-            Show left/right eye animations (one GIF decoder, right eye mirrored)
-            below the status bar. Clips: blink / happy / excited. Packaged into
-            the assets partition from main/assets/eyes/.
+            Show dual-eye animations below the status bar using pre-stitched
+            400x200 GIFs (left+right already combined, no runtime mirror).
+            Packaged into the assets partition from main/assets/eyes_all/.
+
+    config XIAOZHI_ENABLE_VIDEO_STREAM
+        bool "Enable local H.264 LAN video stream"
+        default n
+        depends on IDF_TARGET_ESP32P4
+        help
+            Hardware-encode camera frames to H.264 and serve Annex-B over
+            HTTP at http://<ip>:8080/stream.h264 for ffplay/VLC.
+            Uses CameraHub fan-out so face tracking can share the same frame.
+            Default off; toggle via MCP self.video.set_enabled.
+            While streaming, self.camera.take_photo is disabled.
 
     config XIAOZHI_ENABLE_CAMERA_DEBUG_MODE
         bool "Enable Camera Debug Mode"
@@ -1154,5 +1165,42 @@ menu "TAIJIPAI_S3_CONFIG"
     help
         启动双声道
 endmenu
+
+endmenu
+
+menu "ESP-Claw WeChat Agent"
+
+config CLAW_ENABLE
+    bool "Enable esp-claw WeChat agent subsystem"
+    default n
+    help
+        Runs the esp-claw agent framework as a side subsystem next to the
+        xiaozhi voice pipeline. WeChat messages are handled by an on-device
+        LLM agent; replies go back to WeChat and are announced on the device.
+        When disabled, no esp-claw component is compiled.
+
+config CLAW_IM_WECHAT
+    bool "WeChat (Tencent iLink) channel"
+    depends on CLAW_ENABLE
+    default y
+
+config APP_CLAW_CAP_IM_WECHAT
+    bool
+    default y if CLAW_ENABLE && CLAW_IM_WECHAT
+
+config CLAW_LLM_BACKEND
+    string "LLM backend type (openai_compatible / anthropic_compatible / openai_responses / custom)"
+    depends on CLAW_ENABLE
+    default "openai_compatible"
+
+config CLAW_LLM_MODEL
+    string "LLM model name (NVS claw/llm_model overrides)"
+    depends on CLAW_ENABLE
+    default ""
+
+config CLAW_LLM_BASE_URL
+    string "LLM API base URL (NVS claw/llm_base_url overrides)"
+    depends on CLAW_ENABLE
+    default ""
 
 endmenu

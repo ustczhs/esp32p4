@@ -18,6 +18,9 @@
 #include "lvgl_image.h"
 #include "lvgl_theme.h"
 #include "settings.h"
+#if CONFIG_XIAOZHI_ENABLE_VIDEO_STREAM
+#include "video_streamer.h"
+#endif
 
 #define TAG "MCP"
 
@@ -102,6 +105,14 @@ void McpServer::AddCommonTools() {
                 [camera](const PropertyList& properties) -> ToolResult {
                     // Lower the priority to do the camera capture
                     TaskPriorityReset priority_reset(1);
+
+#if CONFIG_XIAOZHI_ENABLE_VIDEO_STREAM
+                    if (VideoStreamer::GetInstance().IsEnabled()) {
+                        return std::unexpected(
+                            std::string("Camera busy: H.264 LAN stream is enabled. "
+                                        "Disable with self.video.set_enabled false first."));
+                    }
+#endif
 
                     auto question = properties["question"].value<std::string>();
                     // Explain() grabs a frame under its own lock so face tracking

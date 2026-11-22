@@ -118,6 +118,12 @@ public:
     AecMode GetAecMode() const { return aec_mode_; }
     void PlaySound(const std::string_view& sound);
     AudioService& GetAudioService() { return audio_service_; }
+
+#if CONFIG_CLAW_ENABLE
+    // Announce a claw agent reply: full text on screen, short summary injected
+    // through the wake-word detect path for cloud TTS. Thread-safe.
+    void ClawAnnounce(const std::string& summary, const std::string& full_text);
+#endif
     
     /**
      * Reset protocol resources (thread-safe)
@@ -186,6 +192,13 @@ private:
     
     // State change handler called by state machine
     void OnStateChanged(DeviceState old_state, DeviceState new_state);
+
+#if CONFIG_CLAW_ENABLE
+    void ClawInjectDetect(const std::string& summary);
+    std::deque<std::string> claw_announce_queue_;
+    std::string claw_full_text_;
+    std::string claw_tts_text_;
+#endif
 };
 
 
