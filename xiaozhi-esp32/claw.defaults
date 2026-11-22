@@ -1,0 +1,9 @@
+# esp-claw subsystem enablement fragment.
+# Usage (does not touch existing sdkconfig values):
+#   idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32p4;claw.defaults" build
+CONFIG_CLAW_ENABLE=y
+CONFIG_CLAW_IM_WECHAT=y
+# claw HTTP/TLS 与语音/视频并发时内部 RAM 吃紧，esp_hosted SDIO RX 缓冲
+# 动态分配失败会 assert 重启；P4 的 GDMA 可经 cache 访问 PSRAM，把传输
+# 缓冲优先放 PSRAM（失败自动回退内部 DMA RAM）。
+CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM=y
