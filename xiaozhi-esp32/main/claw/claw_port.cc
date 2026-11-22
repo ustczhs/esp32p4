@@ -1,9 +1,9 @@
 #include "claw_port.h"
 
+#include <sys/stat.h>
 #include <cstdio>
 #include <cstring>
 #include <string>
-#include <sys/stat.h>
 
 #include <esp_log.h>
 #include <esp_vfs_fat.h>
@@ -12,15 +12,13 @@
 #include <nvs.h>
 #include <sdkconfig.h>
 
+#include "backend_link.h"
 #include "cap_im_wechat.h"
 #include "cap_system.h"
-#include "claw_agent_mgr.h"
 #include "claw_cap.h"
-#include "claw_core.h"
 #include "claw_event_router.h"
 #include "claw_paths.h"
 #include "wechat_cli.h"
-#include "xiaozhi_bridge.h"
 
 #define TAG "ClawPort"
 
@@ -30,10 +28,14 @@ constexpr const char* kNvsNamespace = "claw";
 constexpr const char* kDataRoot = "/claw";
 constexpr const char* kRulesPath = "/claw/router_rules/router_rules.json";
 
+// v2: agent processing lives in the backend; the router only forwards inbound
+// text to the backend link cap. The marker detects v1 rule files on upgrade.
+constexpr const char* kRulesMarker = "im_text_to_backend";
+
 constexpr const char* kSeedRules = R"JSON([
   {
-    "id": "im_any_message_agent",
-    "description": "Route IM text messages to the agent.",
+    "id": "im_text_to_backend",
+    "description": "Forward IM text messages to the backend agent link.",
     "enabled": true,
     "consume_on_match": true,
     "match": {
@@ -43,40 +45,18 @@ constexpr const char* kSeedRules = R"JSON([
     },
     "actions": [
       {
-        "type": "run_agent",
+        "type": "call_cap",
+        "cap": "backend_forward",
         "input": {
-          "target_channel": "{{event.source_channel}}",
-          "session_policy": "chat"
-        }
-      }
-    ]
-  },
-  {
-    "id": "agent_out_message_send_message",
-    "description": "Deliver agent output messages to the original IM chat.",
-    "enabled": true,
-    "consume_on_match": true,
-    "match": {
-      "source_cap": "claw_core",
-      "event_type": "out_message",
-      "content_type": "text"
-    },
-    "actions": [
-      {
-        "type": "send_message",
-        "input": {
-          "channel": "{{event.source_channel}}",
           "chat_id": "{{event.chat_id}}",
-          "message": "{{event.text}}"
+          "sender_id": "{{event.sender_id}}",
+          "message_id": "{{event.message_id}}",
+          "text": "{{event.text}}"
         }
       }
     ]
   }
 ])JSON";
-
-constexpr const char* kSystemPrompt =
-    "你是运行在 ESP32 设备上的微信助手。用简体中文回复微信消息，"
-    "简短口语化，一般不超过三句话，不要使用 Markdown 格式。";
 
 bool NvsGetString(const char* key, std::string& out) {
     nvs_handle_t handle;
@@ -105,8 +85,8 @@ esp_err_t MountDataPartition() {
         .use_one_fat = false,
     };
     wl_handle_t wl_handle = WL_INVALID_HANDLE;
-    esp_err_t err = esp_vfs_fat_spiflash_mount_rw_wl(kDataRoot, "claw_data", &mount_config,
-                                                     &wl_handle);
+    esp_err_t err =
+        esp_vfs_fat_spiflash_mount_rw_wl(kDataRoot, "claw_data", &mount_config, &wl_handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "FATFS mount failed: %s", esp_err_to_name(err));
         return err;
@@ -118,8 +98,14 @@ esp_err_t MountDataPartition() {
 esp_err_t EnsureSeedRules() {
     FILE* f = fopen(kRulesPath, "r");
     if (f != nullptr) {
+        char buf[512];
+        size_t n = fread(buf, 1, sizeof(buf) - 1, f);
         fclose(f);
-        return ESP_OK;
+        buf[n] = '\0';
+        if (strstr(buf, kRulesMarker) != nullptr) {
+            return ESP_OK;
+        }
+        ESP_LOGI(TAG, "old router rules found, migrating to v2");
     }
     mkdir("/claw/router_rules", 0755);
     f = fopen(kRulesPath, "w");
@@ -143,7 +129,7 @@ esp_err_t SetupWechat() {
     cap_im_wechat_attachment_config_t attachment_config = {
         .storage_root_dir = inbox_path,
         .max_inbound_file_bytes = 512 * 1024,
-        .enable_inbound_attachments = true,
+        .enable_inbound_attachments = false,
     };
     err = cap_im_wechat_set_attachment_config(&attachment_config);
     if (err != ESP_OK) {
@@ -174,68 +160,7 @@ esp_err_t SetupWechat() {
     return ESP_OK;
 }
 
-esp_err_t StartAgent() {
-    std::string api_key, model, base_url;
-    NvsGetString("llm_api_key", api_key);
-    if (!NvsGetString("llm_model", model)) {
-        model = CONFIG_CLAW_LLM_MODEL;
-    }
-    if (!NvsGetString("llm_base_url", base_url)) {
-        base_url = CONFIG_CLAW_LLM_BASE_URL;
-    }
-    if (api_key.empty()) {
-        ESP_LOGW(TAG, "no LLM API key in NVS (claw/llm_api_key); agent replies will fail");
-    }
-
-    claw_core_config_t core_config = {};
-    core_config.api_key = api_key.c_str();
-    core_config.backend_type = CONFIG_CLAW_LLM_BACKEND;
-    core_config.model = model.c_str();
-    core_config.base_url = base_url.c_str();
-    core_config.timeout_ms = 60000;
-    core_config.max_tokens = 1024;
-    core_config.supports_tools = true;
-    core_config.supports_vision = false;
-    core_config.system_prompt = kSystemPrompt;
-    core_config.call_cap = claw_cap_call_from_core;
-    core_config.task_stack_size = 16 * 1024;
-    core_config.task_priority = 5;
-    core_config.task_core = tskNO_AFFINITY;
-    core_config.max_tool_iterations = 6;
-    core_config.request_queue_len = 4;
-    core_config.response_queue_len = 4;
-    core_config.max_context_providers = 4;
-
-    ESP_LOGI(TAG, "root agent backend=%s model=%s base_url=%s key=%s",
-             CONFIG_CLAW_LLM_BACKEND, model.c_str(), base_url.c_str(),
-             api_key.empty() ? "missing" : "configured");
-    claw_agent_mgr_config_t mgr_config = {
-        .core_config = &core_config,
-        .base_context_providers = nullptr,
-        .base_context_provider_count = 0,
-        .root_agent_system_prompt = nullptr,
-        .subagent_system_prompt = nullptr,
-        .subagent_type_prompts = nullptr,
-        .subagent_type_prompt_count = 0,
-    };
-    esp_err_t err = claw_agent_mgr_init(&mgr_config);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "agent mgr init failed: %s", esp_err_to_name(err));
-        return err;
-    }
-    const char* root_agent_id = nullptr;
-    err = claw_agent_mgr_create_root_agent(&root_agent_id);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "root agent create failed: %s", esp_err_to_name(err));
-        return err;
-    }
-    ESP_LOGI(TAG, "root agent ready id=%s", root_agent_id ? root_agent_id : "?");
-    return ESP_OK;
-}
-
-bool NetworkReady(void* ctx) {
-    return true;
-}
+bool NetworkReady(void* ctx) { return true; }
 
 void AssemblyTask(void* arg) {
     const char* step = "mount";
@@ -262,13 +187,16 @@ void AssemblyTask(void* arg) {
         router_config.task_priority = 5;
         router_config.task_core = tskNO_AFFINITY;
         router_config.agent_submit_timeout_ms = 1000;
-        router_config.default_route_messages_to_agent = true;
-        router_config.outbound_resolver = XiaozhiBridgeOutboundResolver;
+        router_config.default_route_messages_to_agent = false;
         err = claw_event_router_init(&router_config);
     }
     if (err == ESP_OK) {
         step = "cap_init";
         err = claw_cap_init();
+    }
+    if (err == ESP_OK) {
+        step = "backend_cap_register";
+        err = BackendLinkRegisterCap();
     }
     if (err == ESP_OK) {
         step = "wechat_register_group";
@@ -279,10 +207,6 @@ void AssemblyTask(void* arg) {
         err = cap_system_register_group();
     }
     if (err == ESP_OK) {
-        step = "outbound_binding";
-        err = claw_event_router_register_outbound_binding("wechat", "wechat_send_message");
-    }
-    if (err == ESP_OK) {
         step = "wechat_setup";
         err = SetupWechat();
     }
@@ -291,8 +215,8 @@ void AssemblyTask(void* arg) {
         err = claw_cap_start_all();
     }
     if (err == ESP_OK) {
-        step = "agent_start";
-        err = StartAgent();
+        step = "backend_link_start";
+        BackendLinkStart();
     }
     if (err == ESP_OK) {
         step = "router_start";

@@ -79,6 +79,19 @@ void Protocol::SendWakeWordDetected(const std::string& wake_word) {
     SendText(json);
 }
 
+void Protocol::SendTtsPush(const std::string& text) {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "session_id", session_id_.c_str());
+    cJSON_AddStringToObject(root, "type", "tts_push");
+    cJSON_AddStringToObject(root, "text", text.c_str());
+    char* json = cJSON_PrintUnformatted(root);
+    if (json != nullptr) {
+        SendText(json);
+        cJSON_free(json);
+    }
+    cJSON_Delete(root);
+}
+
 void Protocol::SendStartListening(ListeningMode mode) {
     std::string message = "{\"session_id\":\"" + session_id_ + "\"";
     message += ",\"type\":\"listen\",\"state\":\"start\"";

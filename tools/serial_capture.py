@@ -18,7 +18,7 @@ def main() -> None:
     ap.add_argument("--port", default="/dev/cu.usbmodem5C941020181")
     ap.add_argument("--seconds", type=float, default=20)
     ap.add_argument("--send", default=None, help="line to send after 2s")
-    ap.add_argument("--filter", default=None, help="only emit lines containing this substring")
+    ap.add_argument("--filter", default=None, help="only emit lines containing any of these '|'-separated substrings")
     args = ap.parse_args()
 
     with serial.Serial(args.port, 115200, timeout=0.2) as ser:
@@ -42,7 +42,7 @@ def main() -> None:
                 line = raw.decode("utf-8", errors="replace").rstrip()
                 if printable_ratio(line) < 0.7:
                     continue
-                if args.filter and args.filter not in line:
+                if args.filter and not any(k in line for k in args.filter.split("|")):
                     continue
                 print(line, flush=True)
 

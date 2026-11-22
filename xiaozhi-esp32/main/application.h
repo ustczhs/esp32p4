@@ -120,9 +120,8 @@ public:
     AudioService& GetAudioService() { return audio_service_; }
 
 #if CONFIG_CLAW_ENABLE
-    // Announce a claw agent reply: full text on screen, short summary injected
-    // through the wake-word detect path for cloud TTS. Thread-safe.
-    void ClawAnnounce(const std::string& summary, const std::string& full_text);
+    // Queue a WeChat reply for TTS announcement + subtitles. Thread-safe.
+    void ClawAnnounce(const std::string& text);
 #endif
     
     /**
@@ -194,10 +193,13 @@ private:
     void OnStateChanged(DeviceState old_state, DeviceState new_state);
 
 #if CONFIG_CLAW_ENABLE
-    void ClawInjectDetect(const std::string& summary);
+    void TryStartClawAnnounce();
+    void CheckClawAnnounceTimeout();
     std::deque<std::string> claw_announce_queue_;
     std::string claw_full_text_;
     std::string claw_tts_text_;
+    bool claw_announce_busy_ = false;
+    int64_t claw_announce_started_us_ = 0;
 #endif
 };
 

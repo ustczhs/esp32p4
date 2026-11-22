@@ -56,21 +56,9 @@ bool NvsEraseKey(const char* key) {
     return err == ESP_OK;
 }
 
-bool NvsHasString(const char* key) {
-    nvs_handle_t handle;
-    if (nvs_open(kNvsNamespace, NVS_READONLY, &handle) != ESP_OK) {
-        return false;
-    }
-    size_t len = 0;
-    bool ok = nvs_get_str(handle, key, nullptr, &len) == ESP_OK && len > 1;
-    nvs_close(handle);
-    return ok;
-}
-
 void LogStatus(const cap_im_wechat_qr_login_status_t& st) {
-    ESP_LOGI(TAG, "login status=%s active=%d configured=%d completed=%d account=%s",
-             st.status, st.active, st.configured, st.completed,
-             st.account_id[0] ? st.account_id : "-");
+    ESP_LOGI(TAG, "login status=%s active=%d configured=%d completed=%d account=%s", st.status,
+             st.active, st.configured, st.completed, st.account_id[0] ? st.account_id : "-");
     if (st.message[0]) {
         ESP_LOGI(TAG, "%s", st.message);
     }
@@ -84,8 +72,7 @@ esp_err_t PersistAndApplyLogin(const cap_im_wechat_qr_login_status_t& st) {
         ESP_LOGE(TAG, "login completed but token/base_url missing");
         return ESP_ERR_INVALID_STATE;
     }
-    if (!NvsSetString("wechat_token", st.token) ||
-        !NvsSetString("wechat_base_url", st.base_url)) {
+    if (!NvsSetString("wechat_token", st.token) || !NvsSetString("wechat_base_url", st.base_url)) {
         ESP_LOGE(TAG, "failed to save wechat credentials to NVS");
         return ESP_FAIL;
     }
@@ -168,8 +155,8 @@ void HandleWechat(const char* args) {
             return;
         }
         s_login_force = strstr(args + 5, "force") != nullptr;
-        if (xTaskCreate(LoginWatcherTask, "claw_wx_login", 6 * 1024, nullptr, 3,
-                        &s_watcher_task) != pdPASS) {
+        if (xTaskCreate(LoginWatcherTask, "claw_wx_login", 6 * 1024, nullptr, 3, &s_watcher_task) !=
+            pdPASS) {
             s_watcher_task = nullptr;
             ESP_LOGE(TAG, "cannot create login watcher task");
         }
@@ -209,51 +196,6 @@ void HandleWechat(const char* args) {
         return;
     }
     ESP_LOGI(TAG, "usage: wechat login [force] | status | cancel | logout");
-}
-
-void HandleLlm(const char* args) {
-    while (*args == ' ') {
-        ++args;
-    }
-    const char* value = strchr(args, ' ');
-    char key[16] = "";
-    if (value != nullptr) {
-        size_t len = static_cast<size_t>(value - args);
-        if (len >= sizeof(key)) {
-            len = sizeof(key) - 1;
-        }
-        memcpy(key, args, len);
-        key[len] = '\0';
-        ++value;
-        while (*value == ' ') {
-            ++value;
-        }
-    } else {
-        strlcpy(key, args, sizeof(key));
-    }
-
-    if (strcmp(key, "status") == 0) {
-        ESP_LOGI(TAG, "llm: key=%s (model/base_url: see boot log; reboot applies changes)",
-                 NvsHasString("llm_api_key") ? "configured" : "missing");
-        return;
-    }
-    const char* nvs_key = nullptr;
-    if (strcmp(key, "key") == 0) {
-        nvs_key = "llm_api_key";
-    } else if (strcmp(key, "model") == 0) {
-        nvs_key = "llm_model";
-    } else if (strcmp(key, "url") == 0) {
-        nvs_key = "llm_base_url";
-    }
-    if (nvs_key == nullptr || value == nullptr || !value[0]) {
-        ESP_LOGI(TAG, "usage: llm key <api_key> | model <name> | url <base_url> | status");
-        return;
-    }
-    if (NvsSetString(nvs_key, value)) {
-        ESP_LOGI(TAG, "llm %s saved to NVS; reboot to apply", key);
-    } else {
-        ESP_LOGE(TAG, "failed to save llm %s", key);
-    }
 }
 
 #if !CONFIG_XIAOZHI_ENABLE_EYE_ANIM
@@ -302,10 +244,6 @@ bool WechatCliHandleLine(const char* line) {
     }
     if (strncmp(line, "wechat", 6) == 0 && (line[6] == '\0' || line[6] == ' ')) {
         HandleWechat(line + 6);
-        return true;
-    }
-    if (strncmp(line, "llm", 3) == 0 && (line[3] == '\0' || line[3] == ' ')) {
-        HandleLlm(line + 3);
         return true;
     }
     return false;

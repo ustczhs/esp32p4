@@ -113,6 +113,11 @@ void WifiBoard::TryWifiConnect() {
     }
     // AddSsid also refreshes the password when the SSID is already saved.
     ssid_manager.AddSsid(LOCAL_WIFI_SSID, LOCAL_WIFI_PASSWORD);
+    Settings wifi_settings("wifi", true);
+    if (wifi_settings.GetString("ota_url") != LOCAL_OTA_URL) {
+        wifi_settings.SetString("ota_url", LOCAL_OTA_URL);
+        ESP_LOGI(TAG, "Local OTA URL set to %s", LOCAL_OTA_URL);
+    }
     if (!local_known) {
         ESP_LOGI(TAG, "Seeding local SSID %s as preferred network", LOCAL_WIFI_SSID);
         const auto& list = ssid_manager.GetSsidList();

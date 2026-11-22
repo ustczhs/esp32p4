@@ -292,6 +292,9 @@ void Application::Run() {
             clock_ticks_++;
             auto display = Board::GetInstance().GetDisplay();
             display->UpdateStatusBar();
+#if CONFIG_CLAW_ENABLE
+            CheckClawAnnounceTimeout();
+#endif
 
             // Print debug info every 10 seconds
             if (clock_ticks_ % 10 == 0) {
@@ -606,6 +609,11 @@ void Application::InitializeProtocol() {
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
             SetDeviceState(kDeviceStateIdle);
+#if CONFIG_CLAW_ENABLE
+            // SetDeviceState(idle) is a no-op when already idle, so the queue
+            // must also be drained here (previous announce session closed).
+            TryStartClawAnnounce();
+#endif
         });
     });
 
@@ -664,6 +672,9 @@ void Application::InitializeProtocol() {
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 Schedule([this]() {
+#if CONFIG_CLAW_ENABLE
+                    claw_announce_busy_ = false;
+#endif
                     if (GetDeviceState() == kDeviceStateSpeaking) {
                         if (listening_mode_ == kListeningModeManualStop) {
                             SetDeviceState(kDeviceStateIdle);
@@ -756,10 +767,9 @@ void Application::InitializeProtocol() {
             if (cJSON_IsObject(payload)) {
                 CJsonStringUniquePtr payload_json(cJSON_PrintUnformatted(payload));
                 if (payload_json) {
-                    Schedule(
-                        [this, display, payload_str = std::string(payload_json.get())]() {
-                            display->SetChatMessage("system", payload_str.c_str());
-                        });
+                    Schedule([this, display, payload_str = std::string(payload_json.get())]() {
+                        display->SetChatMessage("system", payload_str.c_str());
+                    });
                 }
             } else {
                 ESP_LOGW(TAG, "Invalid custom message format: missing payload");
@@ -1044,65 +1054,61 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
 }
 
 #if CONFIG_CLAW_ENABLE
-void Application::ClawAnnounce(const std::string& summary, const std::string& full_text) {
-    Schedule([this, summary, full_text]() {
-        claw_full_text_ = full_text;
+void Application::ClawAnnounce(const std::string& text) {
+    Schedule([this, text]() {
+        claw_full_text_ = text;
         auto display = Board::GetInstance().GetDisplay();
         if (display != nullptr) {
-            display->SetChatMessage("assistant", full_text.c_str());
+            display->SetChatMessage("assistant", text.c_str());
         }
-        if (GetDeviceState() == kDeviceStateIdle) {
-            ClawInjectDetect(summary);
-        } else {
-            if (claw_announce_queue_.size() >= 3) {
-                claw_announce_queue_.pop_front();
-            }
-            claw_announce_queue_.push_back(summary);
-        }
-    });
-}
-
-void Application::ClawInjectDetect(const std::string& summary) {
-    if (GetDeviceState() != kDeviceStateIdle) {
         if (claw_announce_queue_.size() >= 3) {
             claw_announce_queue_.pop_front();
         }
-        claw_announce_queue_.push_back(summary);
+        claw_announce_queue_.push_back(text);
+        TryStartClawAnnounce();
+    });
+}
+
+void Application::TryStartClawAnnounce() {
+    if (claw_announce_busy_ || claw_announce_queue_.empty() || !protocol_) {
         return;
     }
-    if (!protocol_) {
+    if (GetDeviceState() != kDeviceStateIdle) {
         return;
     }
+    // Each announcement gets a fresh channel: wait for the previous session's
+    // goodbye to close it (OnAudioChannelClosed retries the queue).
+    if (protocol_->IsAudioChannelOpened()) {
+        return;
+    }
+    auto text = claw_announce_queue_.front();
+    claw_announce_queue_.pop_front();
     // Manual-stop makes tts stop return to idle instead of opening the mic.
     listening_mode_ = kListeningModeManualStop;
-    if (!protocol_->IsAudioChannelOpened()) {
-        Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
-        if (!protocol_->OpenAudioChannel()) {
-            ESP_LOGW(TAG, "claw announce: open audio channel failed");
-            return;
-        }
+    claw_announce_busy_ = true;
+    claw_announce_started_us_ = esp_timer_get_time();
+    Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+    if (!protocol_->OpenAudioChannel()) {
+        ESP_LOGW(TAG, "claw announce: open audio channel failed");
+        claw_announce_busy_ = false;
+        return;
     }
-    // SendWakeWordDetected concatenates raw text into JSON; escape it here.
-    std::string escaped;
-    for (char c : summary) {
-        switch (c) {
-            case '"': escaped += "\\\""; break;
-            case '\\': escaped += "\\\\"; break;
-            case '\n': escaped += "\\n"; break;
-            case '\r': escaped += "\\r"; break;
-            case '\t': escaped += "\\t"; break;
-            default:
-                if (static_cast<unsigned char>(c) < 0x20) {
-                    char buf[8];
-                    snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(c));
-                    escaped += buf;
-                } else {
-                    escaped += c;
-                }
-        }
+    ESP_LOGI(TAG, "claw announce tts_push: %s", text.c_str());
+    protocol_->SendTtsPush(text);
+}
+
+void Application::CheckClawAnnounceTimeout() {
+    if (!claw_announce_busy_) {
+        return;
     }
-    ESP_LOGI(TAG, "claw announce inject: %s", summary.c_str());
-    protocol_->SendWakeWordDetected(escaped);
+    if (esp_timer_get_time() - claw_announce_started_us_ < 20LL * 1000 * 1000) {
+        return;
+    }
+    ESP_LOGW(TAG, "claw announce timeout, closing channel");
+    claw_announce_busy_ = false;
+    if (protocol_ && protocol_->IsAudioChannelOpened()) {
+        protocol_->CloseAudioChannel(false);
+    }
 }
 #endif
 
@@ -1139,16 +1145,7 @@ void Application::HandleStateChangedEvent() {
             if (!claw_full_text_.empty() && last_error_message_.empty()) {
                 display->SetChatMessage("assistant", claw_full_text_.c_str());
             }
-            if (!claw_announce_queue_.empty()) {
-                Schedule([this]() {
-                    if (claw_announce_queue_.empty()) {
-                        return;
-                    }
-                    auto summary = claw_announce_queue_.front();
-                    claw_announce_queue_.pop_front();
-                    ClawInjectDetect(summary);
-                });
-            }
+            TryStartClawAnnounce();
 #endif
             break;
         case kDeviceStateConnecting:

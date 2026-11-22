@@ -1109,7 +1109,7 @@ endif()
 # decision as a build property that is readable in both passes.
 idf_build_get_property(CLAW_BUILD_ENABLED CLAW_BUILD_ENABLED)
 if(CLAW_BUILD_ENABLED)
-    list(APPEND SOURCES "claw/claw_port.cc" "claw/xiaozhi_bridge.cc" "claw/wechat_cli.cc")
+    list(APPEND SOURCES "claw/claw_port.cc" "claw/backend_link.cc" "claw/wechat_cli.cc")
     list(APPEND INCLUDE_DIRS "claw")
     list(APPEND MAIN_PRIV_REQUIRES_EXTRA
         claw_core
