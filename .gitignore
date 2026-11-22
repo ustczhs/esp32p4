@@ -1,0 +1,20 @@
+.DS_Store
+
+# ESP-IDF build artifacts
+build/
+build_disabled/
+managed_components/
+sdkconfig.old
+sdkconfig.bak-*
+sdkconfig.disabled
+
+# reference clones (kept locally, not tracked)
+esp-claw-ref/
+xiaoclaw-ref/
+
+# tools debug artifacts (may contain session tokens)
+tools/wechat_voice_debug.log
+tools/serial_raw.bin
+tools/wechat_login_qr.png
+tools/qr_url.txt
+tools/claw_storage/
