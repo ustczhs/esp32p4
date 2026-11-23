@@ -21,6 +21,10 @@ public:
 
     void Start();
     void SetEnabled(bool enabled);
+    // Temporary halt for flash-heavy operations (OTA): unlike SetEnabled(false),
+    // does not persist to NVS; Resume() restores the blink clip.
+    void Pause();
+    void Resume();
     bool IsEnabled() const { return enabled_.load(); }
     /**
      * Switch expression.
@@ -54,6 +58,7 @@ private:
 
     std::atomic<bool> started_{false};
     std::atomic<bool> enabled_{true};
+    std::atomic<bool> paused_{false};
     std::string current_expr_;
     std::unique_ptr<LvglRawImage> asset_image_;
     std::unique_ptr<LvglGif> gif_;

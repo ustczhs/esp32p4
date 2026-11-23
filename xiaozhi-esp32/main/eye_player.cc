@@ -620,12 +620,51 @@ void EyePlayer::SetEnabled(bool enabled) {
     }
 }
 
+void EyePlayer::Pause() {
+    if (!started_.load() || paused_.exchange(true)) {
+        return;
+    }
+    CancelReturnTimer();
+    auto display = Board::GetInstance().GetDisplay();
+    if (display) {
+        DisplayLockGuard lock(display);
+        if (lock) {
+            display->DetachEyeImageSrc();
+            if (gif_) {
+                gif_->Stop();
+                gif_.reset();
+            }
+            asset_image_.reset();
+        }
+        current_expr_.clear();
+        display->ClearEyes();
+    } else {
+        if (gif_) {
+            gif_->Stop();
+            gif_.reset();
+        }
+        asset_image_.reset();
+        current_expr_.clear();
+    }
+    ESP_LOGI(TAG, "Eye player paused");
+}
+
+void EyePlayer::Resume() {
+    if (!paused_.exchange(false)) {
+        return;
+    }
+    ESP_LOGI(TAG, "Eye player resumed");
+    if (enabled_.load()) {
+        SetExpr("blink", true, false);
+    }
+}
+
 std::string EyePlayer::CurrentExpr() const {
     return current_expr_.empty() ? "none" : current_expr_;
 }
 
 bool EyePlayer::SetExpr(const std::string& expr, bool force, bool auto_return) {
-    if (!enabled_.load()) {
+    if (!enabled_.load() || paused_.load()) {
         return false;
     }
     std::string name = NormalizeExpr(expr);

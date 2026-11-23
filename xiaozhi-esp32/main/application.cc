@@ -1369,20 +1369,42 @@ bool Application::UpgradeFirmware(const std::string& url, const std::string& ver
 
     board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
     audio_service_.Stop();
+#if CONFIG_XIAOZHI_ENABLE_EYE_ANIM
+    // OTA flash writes suspend the shared flash+PSRAM cache; stop mmap'd eye GIF reads.
+    EyePlayer::GetInstance().Pause();
+#endif
+    // DSI keeps scanning the PSRAM framebuffer through that cache; blank the backlight
+    // to hide scanout flicker during the download (non-permanent, NVS value untouched).
+    auto* backlight = board.GetBacklight();
+    if (backlight != nullptr) {
+        backlight->SetBrightness(0);
+    }
     vTaskDelay(pdMS_TO_TICKS(1000));
 
-    bool upgrade_success = Ota::Upgrade(upgrade_url, [this, display](int progress, size_t speed) {
-        char buffer[32];
-        snprintf(buffer, sizeof(buffer), "%d%% %uKB/s", progress, speed / 1024);
-        Schedule([display, message = std::string(buffer)]() {
-            display->SetChatMessage("system", message.c_str());
+    bool upgrade_success = Ota::Upgrade(
+        upgrade_url, [this, display, last_progress = -1](int progress, size_t speed) mutable {
+            if (progress == last_progress) {
+                return;
+            }
+            last_progress = progress;
+            char buffer[32];
+            snprintf(buffer, sizeof(buffer), "%d%% %uKB/s", progress, speed / 1024);
+            Schedule([display, message = std::string(buffer)]() {
+                display->SetChatMessage("system", message.c_str());
+            });
         });
-    });
+
+    if (backlight != nullptr) {
+        backlight->RestoreBrightness();
+    }
 
     if (!upgrade_success) {
         // Upgrade failed, restart audio service and continue running
         ESP_LOGE(TAG,
                  "Firmware upgrade failed, restarting audio service and continuing operation...");
+#if CONFIG_XIAOZHI_ENABLE_EYE_ANIM
+        EyePlayer::GetInstance().Resume();
+#endif
         audio_service_.Start();                              // Restart audio service
         board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);  // Restore power save level
         Alert(Lang::Strings::ERROR, Lang::Strings::UPGRADE_FAILED, "cancel",
